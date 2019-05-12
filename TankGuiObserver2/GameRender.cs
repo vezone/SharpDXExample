@@ -4,12 +4,16 @@
     using System.Collections.Generic;
 
     using SharpDX;
+    using SharpDX.Windows;
     using SharpDX.Direct2D1;
+    using SharpDX.DirectWrite;
     using SharpDX.Mathematics.Interop;
 
     using TankCommon.Enum;
     using TankCommon.Objects;
-    
+    using System.Diagnostics;
+    using System.Linq;
+
     struct ImmutableObject
     {
         public char ColorBrushIndex;
@@ -41,56 +45,249 @@
         }
     }
 
+    public class TextAnimation
+    {
+        private Stopwatch _textTimer;
+        private string _cAnimatedString;
+        private string _animatedString;
+
+        public TextAnimation()
+        {
+            _textTimer = new Stopwatch();
+            _textTimer.Start();
+        }
+
+        public void SetAnimatedString(string animatedString)
+        {
+            _animatedString = animatedString;
+            _cAnimatedString = animatedString;
+        }
+
+        public string GetAnimatedString()
+        {
+            return _animatedString;
+        }
+
+        public void AnimationStart(int ms, string frame)
+        {
+            if (_textTimer.ElapsedMilliseconds > ms)
+            {
+                _animatedString += frame;
+                if (_animatedString.Length > (_cAnimatedString.Length + 3))
+                    _animatedString = _cAnimatedString;
+                _textTimer.Reset();
+                _textTimer.Start();
+            }
+        }
+    }
+
+    public class TextColorAnimation
+    {
+        private Stopwatch _textTimer;
+        private RawColor4 _color;
+
+        public TextColorAnimation()
+        {
+            _textTimer = new Stopwatch();
+            _textTimer.Start();
+        }
+
+        public void AnimationStart(int ms, ref SolidColorBrush brush)
+        {
+            if (_textTimer.ElapsedMilliseconds > ms)
+            {
+                _color = brush.Color;
+
+                if (_color.A < 0.8f)
+                    _color.A += 0.15f;
+                else if (_color.A > 0.0f)
+                    _color.A -= 0.15f;
+
+                brush.Color = _color;
+                _textTimer.Reset();
+                _textTimer.Start();
+            }
+        }
+    }
+
+    class FpsCounter
+    {
+        private int fps;
+        private int ms;
+        public int FPSCounter { get; set; }
+        public Stopwatch FPSTimer { get; set; }
+
+        public FpsCounter()
+        {
+            FPSTimer = new Stopwatch();
+            FPSTimer.Start();
+        }
+
+        [System.Runtime.CompilerServices.MethodImpl(256)]
+        public void CalculateFpsMs()
+        {
+            fps = (int)((1000.0f * FPSCounter) / FPSTimer.ElapsedMilliseconds);
+            ms = (int)FPSTimer.ElapsedMilliseconds / FPSCounter;
+            FPSTimer.Reset();
+            FPSTimer.Stop();
+            FPSTimer.Start();
+            FPSCounter = 0;
+        }
+
+        public override string ToString()
+        {
+            return string.Format("{0}fps, {1}ms", fps, ms);
+        }
+    }
+
     class GameRender : System.IDisposable
     {
-        private RenderTarget _renderTarget2D;
-        private Factory _factory2D;
+        private RenderForm RenderForm;
+        private RenderTarget RenderTarget2D;
+        private SharpDX.Direct2D1.Factory _factory2D;
 
         private bool _isImmutableObjectsInitialized;
         private bool _isDestructiveObjectsInitialized;
         private bool _isMapSet;
+        private int _mapWidth;
+        private int _mapHeight;
+        private float _zoomWidth;
+        private float _zoomHeight;
+        private Map _map;
         private List<ImmutableObject> _immutableMapObjects;
         private List<DestuctiveWalls> _destuctiveWallsObjects;
+        private RawVector2 _clientInfoLeftPoint;
+        private RawVector2 _clientInfoRightPoint;
+        private RawColor4 _blackScreen;
+        private RectangleF _fullTextBackground;
+        private RectangleF _fpsmsTextRect;
+        private RectangleF _statusTextRect;
+        private RectangleF _logoTextRect;
+        private RectangleF _clientInfoRect; 
+        private RectangleF _clientInfoTextRect; 
+        private RectangleF _clientInfoListRect; 
+        private SharpDX.DirectWrite.Factory directFactory;
+        private TextFormat _statusTextFormat;
+        private TextFormat _fpsmsTextFormat;
+        private TextFormat _logoBrushTextFormat;
         private SolidColorBrush[] _mapObjectsColors;
-        private Map _map;
-        int _mapWidth;
-        int _mapHeight;
-        float _zoomWidth;
-        float _zoomHeight;
+        private FpsCounter _fpsCounter;
+        private TextAnimation _textAnimation;
+        private TextColorAnimation _textColorAnimation;
 
-        public GameRender(Factory factory2D,
+        public GameRender(
+            RenderForm renderForm,
+            SharpDX.Direct2D1.Factory factory2D,
             RenderTarget renderTarget)
         {
+            RenderForm = renderForm;
             _factory2D = factory2D;
-            _renderTarget2D = renderTarget;
+            RenderTarget2D = renderTarget;
             
             _immutableMapObjects = new List<ImmutableObject>();
             _destuctiveWallsObjects = new List<DestuctiveWalls>();
 
+            //textRenderer
+            _blackScreen = new RawColor4(0.0f, 0.0f, 0.0f, 1.0f);
+
             _mapObjectsColors = new SolidColorBrush[] {
-                new SolidColorBrush(_renderTarget2D, Color.White),
-                new SolidColorBrush(_renderTarget2D, Color.DarkRed),
-                new SolidColorBrush(_renderTarget2D, Color.DarkBlue),
-                new SolidColorBrush(_renderTarget2D, Color.GreenYellow),
-                new SolidColorBrush(_renderTarget2D, Color.SandyBrown),
-                new SolidColorBrush(_renderTarget2D, Color.Yellow), //bullet speed
-                new SolidColorBrush(_renderTarget2D, Color.Red), //Damage
-                new SolidColorBrush(_renderTarget2D, Color.Aquamarine), //Health
-                new SolidColorBrush(_renderTarget2D, Color.Blue), //MaxHP
-                new SolidColorBrush(_renderTarget2D, Color.CornflowerBlue),//Speed
-                new SolidColorBrush(_renderTarget2D, Color.LightYellow)//Bullet
+            /*0*/ new SolidColorBrush(RenderTarget2D, Color.White),
+            /*1*/ new SolidColorBrush(RenderTarget2D, Color.DarkRed),
+            /*2*/ new SolidColorBrush(RenderTarget2D, Color.DarkBlue),
+            /*3*/ new SolidColorBrush(RenderTarget2D, Color.GreenYellow),
+            /*4*/ new SolidColorBrush(RenderTarget2D, Color.SandyBrown),
+            /*5*/ new SolidColorBrush(RenderTarget2D, Color.Yellow), //bullet speed
+            /*6*/ new SolidColorBrush(RenderTarget2D, Color.Red), //Damage
+            /*7*/ new SolidColorBrush(RenderTarget2D, Color.Aquamarine), //Health
+            /*8*/ new SolidColorBrush(RenderTarget2D, Color.Blue), //MaxHP
+            /*9*/ new SolidColorBrush(RenderTarget2D, Color.CornflowerBlue),//Speed
+            /*10*/ new SolidColorBrush(RenderTarget2D, Color.LightYellow), //Bullet
+            /*11*/ new SolidColorBrush(RenderTarget2D, Color.White), //_defaultBrush
+            /*12*/ new SolidColorBrush(RenderTarget2D, Color.Green), //_greenBrush
+            /*13*/ new SolidColorBrush(RenderTarget2D, new RawColor4(0.3f, 0.3f, 0.3f, 0.9f)), //_backgroundBrush
+            /*14*/ new SolidColorBrush(RenderTarget2D, new RawColor4(1.0f, 1.0f, 1.0f, 1.0f)) //_logoBrush
             };
 
+            _fpsmsTextRect = new RectangleF(25, 5, 150, 30);
+            _fullTextBackground = new RectangleF(
+                _fpsmsTextRect.Left, _fpsmsTextRect.Top,
+                _fpsmsTextRect.Width, _fpsmsTextRect.Height);
+            _logoTextRect = new RectangleF((float)RenderForm.Width / 5, (float)RenderForm.Height / 3, 1500, 100);
+            _statusTextRect = new RectangleF(
+                _logoTextRect.X + _logoTextRect.X,
+                RenderForm.Height - (RenderForm.Height - _logoTextRect.Bottom - 200), 800, 30);
+            _clientInfoRect = new RectangleF(1000, 0, 1920-1000, 1080);
+            _clientInfoTextRect = new RectangleF(
+                _clientInfoRect.X + 0.39f * _clientInfoRect.X, 
+                _clientInfoRect.Y + 0.05f * _clientInfoRect.Height, 300, 100);
+            _clientInfoLeftPoint = new RawVector2(_clientInfoRect.X, 
+                _clientInfoTextRect.Y + 0.6f * _clientInfoTextRect.Height);
+            _clientInfoRightPoint = new RawVector2(
+                _clientInfoRect.X + _clientInfoRect.Width,
+                _clientInfoTextRect.Y + 0.6f * _clientInfoTextRect.Height);
+            _clientInfoListRect = new RectangleF(
+                1100, 
+                _clientInfoRightPoint.Y,
+                900, 200);
+
+            directFactory =
+                new SharpDX.DirectWrite.Factory(SharpDX.DirectWrite.FactoryType.Shared);
+            _statusTextFormat = new TextFormat(directFactory, "Arial", FontWeight.Regular, FontStyle.Normal, 30.0f);
+            _fpsmsTextFormat = new TextFormat(directFactory, "Arial", FontWeight.Regular, FontStyle.Normal, 24.0f);
+            _logoBrushTextFormat =
+                new TextFormat(directFactory, "Arial", FontWeight.Normal, FontStyle.Italic, 180.0f);
+
+            _textAnimation = new TextAnimation();
+            _textAnimation.SetAnimatedString("Waiting for connection to the server");
+            _textColorAnimation = new TextColorAnimation();
+            _fpsCounter = new FpsCounter();
         }
 
         [System.Runtime.CompilerServices.MethodImpl(256)]
         protected void FillBlock(RawRectangleF rectangle, SolidColorBrush brush)
         {
-            _renderTarget2D.FillRectangle(rectangle, brush);
+            RenderTarget2D.FillRectangle(rectangle, brush);
         }
 
+        [System.Runtime.CompilerServices.MethodImpl(256)]
+        public void DrawFPS()
+        {
+            ++_fpsCounter.FPSCounter;
+            if (_fpsCounter.FPSTimer.ElapsedMilliseconds > 1000)
+            {
+                _fpsCounter.CalculateFpsMs();
+            }
+            RenderTarget2D.FillRectangle(_fullTextBackground, _mapObjectsColors[13]);
+            RenderTarget2D.DrawText(_fpsCounter.ToString(), _fpsmsTextFormat, _fpsmsTextRect, _mapObjectsColors[12]);
+        }
+
+        [System.Runtime.CompilerServices.MethodImpl(256)]
+        public void DrawLogo()
+        {
+            RenderTarget2D.Clear(_blackScreen);
+            _textColorAnimation.AnimationStart(300, ref _mapObjectsColors[11]);
+            RenderTarget2D.DrawText("Battle City v0.1",
+                _logoBrushTextFormat, _logoTextRect, _mapObjectsColors[14]);
+            RenderTarget2D.DrawText("Press any button to start a game",
+                _statusTextFormat, _statusTextRect, _mapObjectsColors[11]);
+        }
+
+        [System.Runtime.CompilerServices.MethodImpl(256)]
+        public void DrawWaitingLogo()
+        {
+            RenderTarget2D.Clear(_blackScreen);
+            _textColorAnimation.AnimationStart(600, ref _mapObjectsColors[11]);
+            RenderTarget2D.DrawText("Battle City v0.1",
+                _logoBrushTextFormat, _logoTextRect, _mapObjectsColors[14]);
+            _textAnimation.AnimationStart(300, ".");
+            RenderTarget2D.DrawText(_textAnimation.GetAnimatedString(),
+                _statusTextFormat, _statusTextRect, _mapObjectsColors[11]);
+        }
+
+        [System.Runtime.CompilerServices.MethodImpl(256)]
         public void DrawMap(Map map)
         {
+            RenderTarget2D.Clear(_blackScreen);
             _map = map;
             // рисуем всю карту
             if (!_isMapSet)
@@ -99,8 +296,8 @@
                 _mapWidth = map.MapWidth;
                 _mapHeight = map.MapHeight;
 
-                _zoomWidth = _renderTarget2D.Size.Width / _mapWidth;
-                _zoomHeight = _renderTarget2D.Size.Height / _mapHeight;
+                _zoomWidth = 1080 / _mapWidth;
+                _zoomHeight = RenderTarget2D.Size.Height / _mapHeight;
             }
 
             //неизменяемые
@@ -215,6 +412,7 @@
             }
         }
 
+        [System.Runtime.CompilerServices.MethodImpl(256)]
         public void DrawInteractiveObjects(List<BaseInteractObject> baseInteractObjects)
         {
             RawRectangleF rawRectangleTemp = new RawRectangleF();
@@ -284,7 +482,28 @@
                 }
             }
         }
-        
+
+        [System.Runtime.CompilerServices.MethodImpl(256)]
+        public void DrawClientInfo()
+        {
+            RenderTarget2D.FillRectangle(_clientInfoRect, _mapObjectsColors[13]);
+            RenderTarget2D.DrawLine(_clientInfoLeftPoint, _clientInfoRightPoint, _mapObjectsColors[12], 10);
+            RenderTarget2D.DrawText("Client info", _statusTextFormat, _clientInfoTextRect, _mapObjectsColors[12]);
+            //
+            List<TankObject> tanks = 
+                _map.InteractObjects.OfType<TankObject>().OrderByDescending(t => t.Score).ToList();
+            int index = 1;
+            RectangleF heightIncriment = _clientInfoListRect;
+            foreach (var tank in tanks)
+            {
+                RenderTarget2D.DrawText(
+                    $"{index}. {tank.Nickname} {tank.Score} {tank.Hp}", 
+                    _statusTextFormat, heightIncriment, _mapObjectsColors[12]);
+                heightIncriment.Y += _clientInfoListRect.Height/4;
+                ++index;
+            }
+        }
+
         public void Dispose()
         {
             for (int mapIndex = 0; mapIndex < _mapObjectsColors.Length; mapIndex++)
